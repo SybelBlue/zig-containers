@@ -77,6 +77,7 @@ fn allocBucketsFromShift(allocator: mem.Allocator, shifts: u8, max_load_factor: 
     return .{ out, max_bucket_count };
 }
 
+// TODO: group Buckets methods into thin wrapper struct
 const Buckets = List(Bucket);
 
 fn listGetUnsafe(comptime T: type, list: List(T), index: usize) *T {
@@ -370,7 +371,7 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
             return removeBucketHelper(buckets, next_index);
         }
 
-        inline fn findFirstUnroll(buckets: List(Bucket), bucket_index: u64, dist_and_fingerprint: u32, data: List(Entry), key: K) FindResult {
+        inline fn findFirstUnroll(buckets: Buckets, bucket_index: u64, dist_and_fingerprint: u32, data: List(Entry), key: K) FindResult {
             const bucket = listGetUnsafe(Bucket, buckets, bucket_index);
             if (dist_and_fingerprint == bucket.dist_and_fingerprint) {
                 const found = listGetUnsafe(Entry, data, bucket.data_index);
@@ -386,7 +387,7 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
             );
         }
 
-        inline fn findSecondUnroll(buckets: List(Bucket), bucket_index: u64, dist_and_fingerprint: u32, data: List(Entry), key: K) FindResult {
+        inline fn findSecondUnroll(buckets: Buckets, bucket_index: u64, dist_and_fingerprint: u32, data: List(Entry), key: K) FindResult {
             const bucket = listGetUnsafe(Bucket, buckets, bucket_index);
             if (dist_and_fingerprint == bucket.dist_and_fingerprint) {
                 const found = listGetUnsafe(Entry, data, bucket.data_index);
@@ -402,7 +403,7 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
             );
         }
 
-        fn findHelper(buckets: List(Bucket), bucket_index: u64, dist_and_fingerprint: u32, data: List(Entry), key: K) FindResult {
+        fn findHelper(buckets: Buckets, bucket_index: u64, dist_and_fingerprint: u32, data: List(Entry), key: K) FindResult {
             // TODO: make iterative or tail call
             const bucket = listGetUnsafe(Bucket, buckets, bucket_index);
             if (dist_and_fingerprint > bucket.dist_and_fingerprint)
