@@ -194,11 +194,11 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
 
         pub fn eql(self: *Self, other: *Self) bool {
             if (self.len() != other.len()) return false;
-            @panic("unimplemented, relies on walk_until");
-        }
-
-        pub fn print() !void {
-            @panic("impl to_inspector_dict");
+            for (self.data.items) |e| {
+                const o = other.get(e.key) catch return false;
+                if (o != e.value) return false;
+            }
+            return true;
         }
 
         fn find(self: *Self, key: K) FindResult {
@@ -217,7 +217,7 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
             return self.find(key) orelse error.KeyNotFound;
         }
 
-        pub fn items(self: *Self) *List(Entry) {
+        pub fn entries(self: *Self) *List(Entry) {
             return &self.data;
         }
 
@@ -231,7 +231,7 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
             return self.insertHelper(bucket_index, dist_and_fingerprint, key, value);
         }
 
-        pub fn remove(self: *Self, key: K) !?V {
+        pub fn remove(self: *Self, key: K) ?V {
             if (self.data.items.len == 0) return null;
             const b0 = nextWhileLess(self.buckets, key, self.shifts);
             const helper = self.removeHelper(b0.data_index, b0.dist_and_fingerprint, key);
@@ -329,12 +329,10 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
             );
         }
 
-        fn removeBucket(self: *Self, bucket_index: u64) !?V {
+        fn removeBucket(self: *Self, bucket_index: u64) ?V {
             const data_index_to_remove = listGetUnsafe(Bucket, self.buckets, bucket_index).data_index;
             const bucket_index1 = removeBucketHelper(self.buckets, bucket_index);
-            const buckets1 = self.buckets;
-            listGetUnsafe(Bucket, buckets1, bucket_index1).* = .{};
-            const buckets2 = buckets1;
+            listGetUnsafe(Bucket, self.buckets, bucket_index1).* = .{};
 
             const last_data_index = self.data.items.len -% 1;
             if (data_index_to_remove == last_data_index) {
@@ -347,9 +345,9 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
 
             const hash = Hasher.hashKey(key);
             const bucket_index2 = Bucket.bucket_index_from_hash(hash, self.shifts);
-            const bucket_index3 = scanForIndex(buckets2, bucket_index2, @as(u32, @truncate(last_data_index)));
+            const bucket_index3 = scanForIndex(self.buckets, bucket_index2, @as(u32, @truncate(last_data_index)));
 
-            const swap_bucket = listGetUnsafe(Bucket, buckets2, bucket_index3);
+            const swap_bucket = listGetUnsafe(Bucket, self.buckets, bucket_index3);
             swap_bucket.data_index = data_index_to_remove;
 
             return popped.value;
