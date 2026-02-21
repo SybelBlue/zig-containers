@@ -2,6 +2,7 @@ const std = @import("std");
 const mem = std.mem;
 const math = std.math;
 
+const Wyhash = std.hash.Wyhash;
 const List = std.ArrayList;
 
 const Bucket = struct {
@@ -115,15 +116,39 @@ fn placeAndShiftUp(buckets0: Buckets, bucket: Bucket, bucket_index: u32) void {
     }
 }
 
+fn getAutoHashFn(comptime K: type) (fn (K) u64) {
+    if (K == []const u8) {
+        return std.hash_map.hashString;
+    }
+
+    return struct {
+        fn hash(key: K) u64 {
+            if (std.meta.hasUniqueRepresentation(K)) {
+                return Wyhash.hash(0, std.mem.asBytes(&key));
+            } else {
+                var hasher = Wyhash.init(0);
+                std.hash_map.autoHash(&hasher, key);
+                return hasher.final();
+            }
+        }
+    }.hash;
+}
+
+fn getAutoEqlFn(comptime K: type) (fn (K, K) bool) {
+    return struct {
+        fn eql(a: K, b: K) bool {
+            return std.meta.eql(a, b);
+        }
+    }.eql;
+}
+
 pub fn IndexMap(comptime K: type, comptime V: type) type {
-    // TODO: check k implements eql and hash
     const Entry = struct { key: K, value: V };
     const FindResult = struct { bucket_index: u64, result: ?*V };
-    const Hasher = struct {
-        fn hashKey(_: K) u64 {
-            @panic("unimplemented!");
-        }
-    };
+
+    const hashKey = getAutoHashFn(K);
+    const keyEql = getAutoEqlFn(K);
+
     return struct {
         const Self = @This();
 
@@ -195,14 +220,14 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
         pub fn eql(self: *Self, other: *Self) bool {
             if (self.len() != other.len()) return false;
             for (self.data.items) |e| {
-                const o = other.get(e.key) catch return false;
-                if (o != e.value) return false;
+                const v = other.get(e.key) catch return false;
+                if (v != e.value) return false;
             }
             return true;
         }
 
         fn find(self: *Self, key: K) FindResult {
-            const hash = Hasher.hashKey(key);
+            const hash = hashKey(key);
             const dist_and_fingerprint = Bucket.dist_and_fingerprint_from_hash(hash);
             const bucket_index = Bucket.bucket_index_from_hash(hash, self.shifts);
             if (self.data.items.len == 0) return .{ .bucket_index = bucket_index, .result = null };
@@ -224,7 +249,7 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
         pub fn insert(self: *Self, key: K, value: V) !*Entry {
             if (self.len() >= self.capacity()) try self.increase_size();
 
-            const hash = Hasher.hashKey(key);
+            const hash = hashKey(key);
             const dist_and_fingerprint = Bucket.dist_and_fingerprint_from_hash(hash);
             const bucket_index = Bucket.bucket_index_from_hash(hash, self.shifts);
 
@@ -283,7 +308,7 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
         }
 
         fn nextWhileLess(buckets: Buckets, key: K, shifts: u8) Bucket {
-            const hash = Hasher.hashKey(key);
+            const hash = hashKey(key);
             const dist_and_fingerprint = Bucket.dist_and_fingerprint_from_hash(hash);
             const bucket_index = Bucket.bucket_index_from_hash(hash, shifts);
             return nextWhileLessHelper(buckets, bucket_index, dist_and_fingerprint);
@@ -307,7 +332,7 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
             }
             if (dist_and_fingerprint0 == loaded.dist_and_fingerprint) {
                 const found = listGetUnsafe(Entry, self.data, loaded.data_index);
-                if (found.key == key) {
+                if (keyEql(found.key, key)) {
                     found.value = value;
                     return found;
                 }
@@ -321,7 +346,7 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
             const bucket = listGetUnsafe(Bucket, self.buckets, bucket_index);
             if (dist_and_fingerprint != bucket.dist_and_fingerprint) return .{ bucket_index, dist_and_fingerprint };
             const found = listGetUnsafe(Entry, self.data, bucket.data_index);
-            if (found.key == key) return .{ bucket_index, dist_and_fingerprint };
+            if (keyEql(found.key, key)) return .{ bucket_index, dist_and_fingerprint };
             return self.removeHelper(
                 nextBucketIndex(bucket_index, self.data.items.len),
                 Bucket.incrementDist(dist_and_fingerprint),
@@ -343,7 +368,7 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
             const popped = self.data.swapRemove(data_index_to_remove);
             const key = listGetUnsafe(Entry, self.data, data_index_to_remove).key;
 
-            const hash = Hasher.hashKey(key);
+            const hash = hashKey(key);
             const bucket_index2 = Bucket.bucket_index_from_hash(hash, self.shifts);
             const bucket_index3 = scanForIndex(self.buckets, bucket_index2, @as(u32, @truncate(last_data_index)));
 
@@ -373,7 +398,7 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
             const bucket = listGetUnsafe(Bucket, buckets, bucket_index);
             if (dist_and_fingerprint == bucket.dist_and_fingerprint) {
                 const found = listGetUnsafe(Entry, data, bucket.data_index);
-                if (found.key == key)
+                if (keyEql(found.key, key))
                     return .{ .bucket_index = bucket_index, .result = &found.value };
             }
             return findFirstUnroll(
@@ -389,7 +414,7 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
             const bucket = listGetUnsafe(Bucket, buckets, bucket_index);
             if (dist_and_fingerprint == bucket.dist_and_fingerprint) {
                 const found = listGetUnsafe(Entry, data, bucket.data_index);
-                if (found.key == key)
+                if (keyEql(found.key, key))
                     return .{ .bucket_index = bucket_index, .result = &found.value };
             }
             return findHelper(
@@ -409,7 +434,7 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
 
             if (dist_and_fingerprint == bucket.dist_and_fingerprint) {
                 const found = listGetUnsafe(Entry, data, bucket.data_index);
-                if (found.key == key)
+                if (keyEql(found.key, key))
                     return .{ .bucket_index = bucket_index, .result = &found.value };
             }
             return findHelper(
