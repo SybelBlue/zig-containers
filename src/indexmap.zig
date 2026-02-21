@@ -5,6 +5,8 @@ const math = std.math;
 const Wyhash = std.hash.Wyhash;
 const List = std.ArrayList;
 
+const dist_inc: u32 = 1 << 8;
+
 const Bucket = struct {
     const Self = @This();
 
@@ -12,30 +14,28 @@ const Bucket = struct {
     dist_and_fingerprint: u32 = 0,
     data_index: u32 = 0,
 
-    const dist_inc: u32 = 1 << 8;
     const fingerprint_mask = dist_inc -% 1;
 
-    fn incrementDist(dist_and_fingerprint: u32) u32 {
-        return dist_and_fingerprint +% dist_inc;
-    }
-
-    fn decrementDist(dist_and_fingerprint: u32) u32 {
-        return dist_and_fingerprint -% dist_inc;
-    }
-
-    fn incrementDistN(dist_and_fingerprint: u32, n: u32) void {
-        return dist_and_fingerprint +% (n *% dist_inc);
-    }
-
-    fn dist_and_fingerprint_from_hash(hash: u64) u32 {
+    fn distAndFingerprintFromHash(hash: u64) u32 {
         return (@as(u32, @truncate(hash)) & fingerprint_mask) | dist_inc;
-    }
-
-    fn bucket_index_from_hash(hash: u64, shifts: u8) u64 {
-        return hash >> shifts;
     }
 };
 
+fn incrementDist(dist_and_fingerprint: u32) u32 {
+    return dist_and_fingerprint +% dist_inc;
+}
+
+fn decrementDist(dist_and_fingerprint: u32) u32 {
+    return dist_and_fingerprint -% dist_inc;
+}
+
+// fn incrementDistN(dist_and_fingerprint: u32, n: u32) void {
+//     return dist_and_fingerprint +% (n *% dist_inc);
+// }
+
+fn bucketIndexFromHash(hash: u64, shifts: u8) u64 {
+    return hash >> shifts;
+}
 const initial_shifts: u8 = 64 -% 3;
 
 const max_size: u64 = 1 << 32;
@@ -95,7 +95,7 @@ fn nextWhileLessHelper(buckets: Buckets, bucket_index: u64, dist_and_fingerprint
     return nextWhileLessHelper(
         buckets,
         nextBucketIndex(bucket_index, buckets.items.len),
-        Bucket.incrementDist(dist_and_fingerprint),
+        incrementDist(dist_and_fingerprint),
     );
 }
 
@@ -107,7 +107,7 @@ fn placeAndShiftUp(buckets0: Buckets, bucket: Bucket, bucket_index: u32) void {
             buckets0,
             .{
                 .data_index = bucket.data_index,
-                .dist_and_fingerprint = Bucket.incrementDist(bucket.dist_and_fingerprint),
+                .dist_and_fingerprint = incrementDist(bucket.dist_and_fingerprint),
             },
             buckets0.items.len,
         );
@@ -144,7 +144,7 @@ fn getAutoEqlFn(comptime K: type) (fn (K, K) bool) {
 
 pub fn IndexMap(comptime K: type, comptime V: type) type {
     const Entry = struct { key: K, value: V };
-    const FindResult = struct { bucket_index: u64, result: ?*V };
+    const FindResult = struct { bucket_index: u64, result: ?*V = null };
 
     const hashKey = getAutoHashFn(K);
     const keyEql = getAutoEqlFn(K);
@@ -227,11 +227,15 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
         }
 
         fn find(self: *Self, key: K) FindResult {
-            const hash = hashKey(key);
-            const dist_and_fingerprint = Bucket.dist_and_fingerprint_from_hash(hash);
-            const bucket_index = Bucket.bucket_index_from_hash(hash, self.shifts);
-            if (self.data.items.len == 0) return .{ .bucket_index = bucket_index, .result = null };
-            return findFirstUnroll(self.buckets, bucket_index, dist_and_fingerprint, self.data.items, key);
+            const data = bucketIndexAndDistFrom(key, self.shifts);
+            if (self.data.items.len == 0) return .{ .bucket_index = data.bucket_index, .result = null };
+            return findFirstUnroll(
+                self.buckets,
+                data.bucket_index,
+                data.dist_and_fingerprint,
+                self.data.items,
+                key,
+            );
         }
 
         pub fn conains(self: *Self, key: K) bool {
@@ -248,12 +252,8 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
 
         pub fn insert(self: *Self, key: K, value: V) !*Entry {
             if (self.len() >= self.capacity()) try self.increase_size();
-
-            const hash = hashKey(key);
-            const dist_and_fingerprint = Bucket.dist_and_fingerprint_from_hash(hash);
-            const bucket_index = Bucket.bucket_index_from_hash(hash, self.shifts);
-
-            return self.insertHelper(bucket_index, dist_and_fingerprint, key, value);
+            const data = bucketIndexAndDistFrom(key, self.shifts);
+            return self.insertHelper(data.bucket_index, data.dist_and_fingerprint, key, value);
         }
 
         pub fn remove(self: *Self, key: K) ?V {
@@ -308,10 +308,8 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
         }
 
         fn nextWhileLess(buckets: Buckets, key: K, shifts: u8) Bucket {
-            const hash = hashKey(key);
-            const dist_and_fingerprint = Bucket.dist_and_fingerprint_from_hash(hash);
-            const bucket_index = Bucket.bucket_index_from_hash(hash, shifts);
-            return nextWhileLessHelper(buckets, bucket_index, dist_and_fingerprint);
+            const data = bucketIndexAndDistFrom(key, shifts);
+            return nextWhileLessHelper(buckets, data.bucket_index, data.dist_and_fingerprint);
         }
 
         fn insertHelper(self: *Self, bucket_index0: u64, dist_and_fingerprint0: u32, key: K, value: V) !*Entry {
@@ -338,7 +336,7 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
                 }
             }
             const bucket_index1 = nextBucketIndex(bucket_index0, self.buckets.items.len);
-            const dist_and_fingerprint1 = Bucket.incrementDist(dist_and_fingerprint0);
+            const dist_and_fingerprint1 = incrementDist(dist_and_fingerprint0);
             return insertHelper(self, bucket_index1, dist_and_fingerprint1, key, value);
         }
 
@@ -349,7 +347,7 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
             if (keyEql(found.key, key)) return .{ bucket_index, dist_and_fingerprint };
             return self.removeHelper(
                 nextBucketIndex(bucket_index, self.data.items.len),
-                Bucket.incrementDist(dist_and_fingerprint),
+                incrementDist(dist_and_fingerprint),
                 key,
             );
         }
@@ -369,7 +367,7 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
             const key = listGetUnsafe(Entry, self.data, data_index_to_remove).key;
 
             const hash = hashKey(key);
-            const bucket_index2 = Bucket.bucket_index_from_hash(hash, self.shifts);
+            const bucket_index2 = bucketIndexFromHash(hash, self.shifts);
             const bucket_index3 = scanForIndex(self.buckets, bucket_index2, @as(u32, @truncate(last_data_index)));
 
             const swap_bucket = listGetUnsafe(Bucket, self.buckets, bucket_index3);
@@ -389,8 +387,8 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
             // TODO: make iterative or tail call
             const next_index = nextBucketIndex(bucket_index, buckets.items.len);
             const next_bucket = listGetUnsafe(Bucket, buckets, next_index);
-            if (next_bucket.dist_and_fingerprint < Bucket.dist_inc *% 2) return bucket_index;
-            next_bucket.dist_and_fingerprint = Bucket.decrementDist(next_bucket.dist_and_fingerprint);
+            if (next_bucket.dist_and_fingerprint < dist_inc *% 2) return bucket_index;
+            next_bucket.dist_and_fingerprint = decrementDist(next_bucket.dist_and_fingerprint);
             return removeBucketHelper(buckets, next_index);
         }
 
@@ -404,7 +402,7 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
             return findFirstUnroll(
                 buckets,
                 nextBucketIndex(bucket_index, buckets.items.len),
-                Bucket.incrementDist(dist_and_fingerprint),
+                incrementDist(dist_and_fingerprint),
                 data,
                 key,
             );
@@ -420,7 +418,7 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
             return findHelper(
                 buckets,
                 nextBucketIndex(bucket_index, buckets.items.len),
-                Bucket.incrementDist(dist_and_fingerprint),
+                incrementDist(dist_and_fingerprint),
                 data,
                 key,
             );
@@ -440,10 +438,17 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
             return findHelper(
                 buckets,
                 nextBucketIndex(bucket_index, buckets.items.len),
-                Bucket.incrementDist(dist_and_fingerprint),
+                incrementDist(dist_and_fingerprint),
                 data,
                 key,
             );
+        }
+
+        inline fn bucketIndexAndDistFrom(key: K, shifts: u8) struct { dist_and_fingerprint: u32, bucket_index: u64 } {
+            const hash = hashKey(key);
+            const dist_and_fingerprint = Bucket.distAndFingerprintFromHash(hash);
+            const bucket_index = bucketIndexFromHash(hash, shifts);
+            return .{ .dist_and_fingerprint = dist_and_fingerprint, .bucket_index = bucket_index };
         }
     };
 }

@@ -1,4 +1,5 @@
 const siv = @import("siv.zig");
+const indexmap = @import("indexmap.zig");
 
 pub const StaticIndexVector = siv.StaticIndexVector;
 pub const IndexError = siv.IndexError;
