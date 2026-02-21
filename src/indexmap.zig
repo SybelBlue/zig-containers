@@ -12,7 +12,7 @@ const Bucket = struct {
 
     /// upper 3 bytes: dist to original bucket. lower byte: fingerprint from hash
     dist_and_fingerprint: u32 = 0,
-    data_index: u32 = 0,
+    data_index: usize = 0,
 
     const fingerprint_mask = dist_inc -% 1;
 
@@ -34,14 +34,14 @@ fn decrementDist(dist_and_fingerprint: u32) u32 {
 // }
 
 fn bucketIndexFromHash(hash: u64, shifts: u8) u64 {
-    return hash >> shifts;
+    return hash >> @truncate(shifts);
 }
 const initial_shifts: u8 = 64 -% 3;
 
-const max_size: u64 = 1 << 32;
+const max_size: usize = 1 << 32;
 const max_bucket_count = max_size;
 
-fn nextBucketIndex(bucket_index: u32, max_buckets: u32) u32 {
+fn nextBucketIndex(bucket_index: usize, max_buckets: usize) usize {
     return if (bucket_index +% 1 != max_buckets) bucket_index +% 1 else 0;
 }
 
@@ -64,7 +64,7 @@ fn calcShiftsForSizeHelper(shifts: u8, size: u64, max_load_factor: f32) u8 {
     return shifts;
 }
 
-fn allocBucketsFromShift(allocator: mem.Allocator, shifts: u8, max_load_factor: u32) !struct { Buckets, u64 } {
+fn allocBucketsFromShift(allocator: mem.Allocator, shifts: u8, max_load_factor: f32) !struct { Buckets, u64 } {
     // TODO: refactor for values to be taken from self if possible
     const bucket_count = calcNumBuckets(shifts);
     const new_capacity = if (bucket_count == max_bucket_count)
@@ -81,17 +81,17 @@ fn allocBucketsFromShift(allocator: mem.Allocator, shifts: u8, max_load_factor: 
 // TODO: group Buckets methods into thin wrapper struct
 const Buckets = List(Bucket);
 
-fn listGetUnsafe(comptime T: type, list: List(T), index: usize) *T {
+fn listGetUnsafe(comptime T: type, list: *List(T), index: usize) *T {
     std.debug.assert(index < list.capacity);
     const out = &list.items[0..list.capacity][index];
     list.items.len = @max(index, list.items.len);
     return out;
 }
 
-fn nextWhileLessHelper(buckets: Buckets, bucket_index: u64, dist_and_fingerprint: u32) Bucket {
+fn nextWhileLessHelper(buckets: *Buckets, bucket_index: usize, dist_and_fingerprint: u32) Bucket {
     // TODO: make iterative or tail call
     const loaded = listGetUnsafe(Bucket, buckets, bucket_index);
-    if (dist_and_fingerprint >= loaded.*.dist_and_fingerprint) return .{ bucket_index, dist_and_fingerprint };
+    if (dist_and_fingerprint >= loaded.*.dist_and_fingerprint) return .{ .data_index = bucket_index, .dist_and_fingerprint = dist_and_fingerprint };
     return nextWhileLessHelper(
         buckets,
         nextBucketIndex(bucket_index, buckets.items.len),
@@ -99,17 +99,18 @@ fn nextWhileLessHelper(buckets: Buckets, bucket_index: u64, dist_and_fingerprint
     );
 }
 
-fn placeAndShiftUp(buckets0: Buckets, bucket: Bucket, bucket_index: u32) void {
-    const loaded = listGetUnsafe(Bucket, buckets0, bucket_index);
+fn placeAndShiftUp(buckets: *Buckets, bucket: Bucket, bucket_index: usize) void {
+    const loaded = listGetUnsafe(Bucket, buckets, bucket_index);
     if (loaded.*.dist_and_fingerprint != 0) {
-        mem.swap(Bucket, &bucket, loaded);
+        const old = loaded.*;
+        loaded.* = bucket;
         placeAndShiftUp(
-            buckets0,
+            buckets,
             .{
-                .data_index = bucket.data_index,
-                .dist_and_fingerprint = incrementDist(bucket.dist_and_fingerprint),
+                .data_index = old.data_index,
+                .dist_and_fingerprint = incrementDist(old.dist_and_fingerprint),
             },
-            buckets0.items.len,
+            buckets.items.len,
         );
     } else {
         loaded.* = bucket;
@@ -214,7 +215,7 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
         }
 
         pub fn len(self: *Self) usize {
-            return self.data.len;
+            return self.data.items.len;
         }
 
         pub fn eql(self: *Self, other: *Self) bool {
@@ -230,10 +231,10 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
             const data = bucketIndexAndDistFrom(key, self.shifts);
             if (self.data.items.len == 0) return .{ .bucket_index = data.bucket_index, .result = null };
             return findFirstUnroll(
-                self.buckets,
+                &self.buckets,
                 data.bucket_index,
                 data.dist_and_fingerprint,
-                self.data.items,
+                &self.data,
                 key,
             );
         }
@@ -243,7 +244,7 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
         }
 
         pub fn get(self: *Self, key: K) error{KeyNotFound}!*V {
-            return self.find(key) orelse error.KeyNotFound;
+            return self.find(key).result orelse error.KeyNotFound;
         }
 
         pub fn entries(self: *Self) *List(Entry) {
@@ -278,21 +279,21 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
         fn reallocAndRefillBuckets(self: *Self, new_shifts: u8) !void {
             // TODO: attempt resizing before reallocating and copying, will have to empty if resized!
 
-            const alloc_result = try allocBucketsFromShift(
+            var alloc_result = try allocBucketsFromShift(
                 self.allocator,
                 new_shifts,
                 self.max_load_factor,
             );
 
-            fillBucketsFromData(&alloc_result.@"0", &self.data, new_shifts);
+            fillBucketsFromData(&alloc_result.@"0", self.data, new_shifts);
 
             self.buckets.deinit(self.allocator);
-            self.buckets = &alloc_result.@"0";
+            self.buckets = alloc_result.@"0";
             self.max_bucket_capacity = alloc_result.@"1";
             self.shifts = new_shifts;
         }
 
-        fn fillBucketsFromData(buckets: Buckets, data: List(Entry), shifts: u8) void {
+        fn fillBucketsFromData(buckets: *Buckets, data: List(Entry), shifts: u8) void {
             for (data.items, 0..) |bucket, data_index| {
                 const key = bucket.key;
                 const b = nextWhileLess(buckets, key, shifts);
@@ -307,29 +308,29 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
             }
         }
 
-        fn nextWhileLess(buckets: Buckets, key: K, shifts: u8) Bucket {
+        fn nextWhileLess(buckets: *Buckets, key: K, shifts: u8) Bucket {
             const data = bucketIndexAndDistFrom(key, shifts);
             return nextWhileLessHelper(buckets, data.bucket_index, data.dist_and_fingerprint);
         }
 
         fn insertHelper(self: *Self, bucket_index0: u64, dist_and_fingerprint0: u32, key: K, value: V) !*Entry {
             // TODO: rearrange cases so base case (>) is last, resulting in fewer checks
-            const loaded = listGetUnsafe(Bucket, self.buckets, bucket_index0);
+            const loaded = listGetUnsafe(Bucket, &self.buckets, bucket_index0);
             if (dist_and_fingerprint0 > loaded.dist_and_fingerprint) {
                 try self.data.append(self.allocator, .{ .key = key, .value = value });
                 const data_index = self.data.items.len -% 1;
                 placeAndShiftUp(
-                    self.buckets,
+                    &self.buckets,
                     .{
                         .dist_and_fingerprint = dist_and_fingerprint0,
                         .data_index = data_index,
                     },
                     bucket_index0,
                 );
-                return &self.data[data_index];
+                return &self.data.items[data_index];
             }
             if (dist_and_fingerprint0 == loaded.dist_and_fingerprint) {
-                const found = listGetUnsafe(Entry, self.data, loaded.data_index);
+                const found = listGetUnsafe(Entry, &self.data, loaded.data_index);
                 if (keyEql(found.key, key)) {
                     found.value = value;
                     return found;
@@ -341,9 +342,9 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
         }
 
         fn removeHelper(self: *Self, bucket_index: u64, dist_and_fingerprint: u32, key: K) struct { u64, u32 } {
-            const bucket = listGetUnsafe(Bucket, self.buckets, bucket_index);
+            const bucket = listGetUnsafe(Bucket, &self.buckets, bucket_index);
             if (dist_and_fingerprint != bucket.dist_and_fingerprint) return .{ bucket_index, dist_and_fingerprint };
-            const found = listGetUnsafe(Entry, self.data, bucket.data_index);
+            const found = listGetUnsafe(Entry, &self.data, bucket.data_index);
             if (keyEql(found.key, key)) return .{ bucket_index, dist_and_fingerprint };
             return self.removeHelper(
                 nextBucketIndex(bucket_index, self.data.items.len),
@@ -353,9 +354,9 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
         }
 
         fn removeBucket(self: *Self, bucket_index: u64) ?V {
-            const data_index_to_remove = listGetUnsafe(Bucket, self.buckets, bucket_index).data_index;
+            const data_index_to_remove = listGetUnsafe(Bucket, &self.buckets, bucket_index).data_index;
             const bucket_index1 = removeBucketHelper(self.buckets, bucket_index);
-            listGetUnsafe(Bucket, self.buckets, bucket_index1).* = .{};
+            listGetUnsafe(Bucket, &self.buckets, bucket_index1).* = .{};
 
             const last_data_index = self.data.items.len -% 1;
             if (data_index_to_remove == last_data_index) {
@@ -364,26 +365,26 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
             }
 
             const popped = self.data.swapRemove(data_index_to_remove);
-            const key = listGetUnsafe(Entry, self.data, data_index_to_remove).key;
+            const key = listGetUnsafe(Entry, &self.data, data_index_to_remove).key;
 
             const hash = hashKey(key);
             const bucket_index2 = bucketIndexFromHash(hash, self.shifts);
             const bucket_index3 = scanForIndex(self.buckets, bucket_index2, @as(u32, @truncate(last_data_index)));
 
-            const swap_bucket = listGetUnsafe(Bucket, self.buckets, bucket_index3);
+            const swap_bucket = listGetUnsafe(Bucket, &self.buckets, bucket_index3);
             swap_bucket.data_index = data_index_to_remove;
 
             return popped.value;
         }
 
-        fn scanForIndex(buckets: Buckets, bucket_index: u64, data_index: u32) u64 {
+        fn scanForIndex(buckets: *Buckets, bucket_index: u64, data_index: u32) u64 {
             // TODO make iterative or tail call
             const bucket = listGetUnsafe(Bucket, buckets, bucket_index);
             if (bucket.data_index == data_index) return data_index;
             return scanForIndex(buckets, nextBucketIndex(bucket_index, buckets.items.len), data_index);
         }
 
-        fn removeBucketHelper(buckets: Buckets, bucket_index: u64) u64 {
+        fn removeBucketHelper(buckets: *Buckets, bucket_index: u64) u64 {
             // TODO: make iterative or tail call
             const next_index = nextBucketIndex(bucket_index, buckets.items.len);
             const next_bucket = listGetUnsafe(Bucket, buckets, next_index);
@@ -392,14 +393,14 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
             return removeBucketHelper(buckets, next_index);
         }
 
-        inline fn findFirstUnroll(buckets: Buckets, bucket_index: u64, dist_and_fingerprint: u32, data: List(Entry), key: K) FindResult {
+        inline fn findFirstUnroll(buckets: *Buckets, bucket_index: u64, dist_and_fingerprint: u32, data: *List(Entry), key: K) FindResult {
             const bucket = listGetUnsafe(Bucket, buckets, bucket_index);
             if (dist_and_fingerprint == bucket.dist_and_fingerprint) {
                 const found = listGetUnsafe(Entry, data, bucket.data_index);
                 if (keyEql(found.key, key))
                     return .{ .bucket_index = bucket_index, .result = &found.value };
             }
-            return findFirstUnroll(
+            return findSecondUnroll(
                 buckets,
                 nextBucketIndex(bucket_index, buckets.items.len),
                 incrementDist(dist_and_fingerprint),
@@ -408,7 +409,7 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
             );
         }
 
-        inline fn findSecondUnroll(buckets: Buckets, bucket_index: u64, dist_and_fingerprint: u32, data: List(Entry), key: K) FindResult {
+        inline fn findSecondUnroll(buckets: *Buckets, bucket_index: u64, dist_and_fingerprint: u32, data: *List(Entry), key: K) FindResult {
             const bucket = listGetUnsafe(Bucket, buckets, bucket_index);
             if (dist_and_fingerprint == bucket.dist_and_fingerprint) {
                 const found = listGetUnsafe(Entry, data, bucket.data_index);
@@ -424,7 +425,7 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
             );
         }
 
-        fn findHelper(buckets: Buckets, bucket_index: u64, dist_and_fingerprint: u32, data: List(Entry), key: K) FindResult {
+        fn findHelper(buckets: *Buckets, bucket_index: u64, dist_and_fingerprint: u32, data: *List(Entry), key: K) FindResult {
             // TODO: make iterative or tail call
             const bucket = listGetUnsafe(Bucket, buckets, bucket_index);
             if (dist_and_fingerprint > bucket.dist_and_fingerprint)
@@ -451,4 +452,14 @@ pub fn IndexMap(comptime K: type, comptime V: type) type {
             return .{ .dist_and_fingerprint = dist_and_fingerprint, .bucket_index = bucket_index };
         }
     };
+}
+
+test "basic storage" {
+    const alloc = std.testing.allocator;
+    var map = try IndexMap(usize, u8).initCapacity(alloc, 8);
+    _ = try map.insert(1, 'a');
+    _ = try map.insert(4, 'b');
+    _ = try map.insert(0, 'c');
+    _ = try map.insert(9, 'a');
+    try std.testing.expectEqual('a', (try map.get(1)).*);
 }
