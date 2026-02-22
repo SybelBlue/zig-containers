@@ -51,16 +51,16 @@ pub fn Chunk(comptime A: type, comptime n: usize) type {
             return self.left == 0 and self.right == n;
         }
 
-        inline fn ptr(self: *Self, index: usize) *A {
+        inline fn rawPtr(self: *Self, index: usize) *A {
             return &self.data[index];
         }
 
         inline fn forceRead(self: *Self, index: usize) A {
-            return self.ptr(index).*;
+            return self.rawPtr(index).*;
         }
 
         inline fn forceWrite(self: *Self, index: usize, value: A) void {
-            self.ptr(index).* = value;
+            self.rawPtr(index).* = value;
         }
 
         inline fn forceWriteMany(self: *Self, write_index: usize, values: []A) void {
@@ -88,6 +88,15 @@ pub fn Chunk(comptime A: type, comptime n: usize) type {
                     other.data[to..][0..count],
                     self.data[from..][0..count],
                 );
+        }
+
+        pub fn ptr(self: *Self, index: usize) *A {
+            if (index >= self.len()) @panic("Chunk.getPtr: index out of bounds");
+            return &self.data[self.left + index];
+        }
+
+        pub fn get(self: *Self, index: usize) A {
+            return self.ptr(index).*;
         }
 
         pub fn pushFront(self: *Self, value: A) error{Full}!void {
@@ -150,10 +159,10 @@ pub fn Chunk(comptime A: type, comptime n: usize) type {
             return right_chunk;
         }
 
-        pub fn append(self: *Self, other: *Self) error{Overflow}!void {
+        pub fn append(self: *Self, other: *Self) error{TooMany}!void {
             const self_len = self.len();
             const other_len = other.len();
-            if (n > self_len + other_len) return error.Overflow;
+            if (n > self_len + other_len) return error.TooMany;
             if (self.right + other_len > n) {
                 self.forceCopy(self.left, 0, self_len);
                 self.right -= self.left;
@@ -165,10 +174,10 @@ pub fn Chunk(comptime A: type, comptime n: usize) type {
             other.right = 0;
         }
 
-        pub fn drainFromFront(self: *Self, other: *Self, count: usize) error{ Overflow, NotEnoughItems }!void {
+        pub fn drainFromFront(self: *Self, other: *Self, count: usize) error{ TooMany, NotEnoughItems }!void {
             const self_len = self.len();
             const other_len = other.len();
-            if (n > self_len + other_len) return error.Overflow;
+            if (n > self_len + other_len) return error.TooMany;
             if (count > other_len) return error.NotEnoughItems;
             if (self.right + count > n) {
                 self.forceCopy(self.left, 0, self_len);
@@ -180,10 +189,10 @@ pub fn Chunk(comptime A: type, comptime n: usize) type {
             other.left += count;
         }
 
-        pub fn drainFromBack(self: *Self, other: *Self, count: usize) error{ Overflow, NotEnoughItems }!void {
+        pub fn drainFromBack(self: *Self, other: *Self, count: usize) error{ TooMany, NotEnoughItems }!void {
             const self_len = self.len();
             const other_len = other.len();
-            if (n > self_len + other_len) return error.Overflow;
+            if (n > self_len + other_len) return error.TooMany;
             if (count > other_len) return error.NotEnoughItems;
             if (self.left < count) {
                 self.forceCopy(self.left, n - self_len, self_len);
@@ -229,9 +238,9 @@ pub fn Chunk(comptime A: type, comptime n: usize) type {
         /// to the right.
         ///
         /// Panics if the index is out of bounds.
-        pub fn insertMany(self: *Self, index: usize, values: []A) error{Overflow}!void {
+        pub fn insertMany(self: *Self, index: usize, values: []A) error{TooMany}!void {
             const insert_size = values.len;
-            if (self.len() + insert_size > n) return error.Overflow;
+            if (self.len() + insert_size > n) return error.TooMany;
             if (index > self.len()) @panic("Chunk.insert: index out of bounds");
 
             const real_index = index + self.left;
@@ -439,4 +448,175 @@ test "remove_value" {
     for (33..64) |i| try expected.append(testing.allocator, @intCast(i));
 
     try testing.expectEqualSlices(i32, expected.items, out.items);
+}
+
+test "insertMany: overflow returns error" {
+    var chunk = Chunk(i32, 4).empty();
+    try chunk.pushBack(0);
+    try chunk.pushBack(1);
+    try chunk.pushBack(2);
+    var values = [_]i32{ 10, 11, 12 };
+    // 2 slots left, trying to insert 3
+    try testing.expectError(error.TooMany, chunk.insertMany(1, &values));
+}
+
+test "insertMany: into empty chunk" {
+    var chunk = Chunk(i32, 8).empty();
+    var values = [_]i32{ 1, 2, 3 };
+    try chunk.insertMany(0, &values);
+    try testing.expectEqual(@as(usize, 3), chunk.len());
+    try testing.expectEqual(@as(i32, 1), chunk.get(0));
+    try testing.expectEqual(@as(i32, 2), chunk.get(1));
+    try testing.expectEqual(@as(i32, 3), chunk.get(2));
+}
+
+test "insertMany: at front" {
+    var chunk = Chunk(i32, 8).empty();
+    try chunk.pushBack(10);
+    try chunk.pushBack(11);
+    try chunk.pushBack(12);
+    var values = [_]i32{ 1, 2, 3 };
+    try chunk.insertMany(0, &values);
+    try testing.expectEqual(@as(usize, 6), chunk.len());
+    try testing.expectEqual(@as(i32, 1), chunk.get(0));
+    try testing.expectEqual(@as(i32, 2), chunk.get(1));
+    try testing.expectEqual(@as(i32, 3), chunk.get(2));
+    try testing.expectEqual(@as(i32, 10), chunk.get(3));
+    try testing.expectEqual(@as(i32, 11), chunk.get(4));
+    try testing.expectEqual(@as(i32, 12), chunk.get(5));
+}
+
+test "insertMany: at back" {
+    var chunk = Chunk(i32, 8).empty();
+    try chunk.pushBack(1);
+    try chunk.pushBack(2);
+    try chunk.pushBack(3);
+    var values = [_]i32{ 10, 11, 12 };
+    try chunk.insertMany(3, &values);
+    try testing.expectEqual(@as(usize, 6), chunk.len());
+    try testing.expectEqual(@as(i32, 1), chunk.get(0));
+    try testing.expectEqual(@as(i32, 2), chunk.get(1));
+    try testing.expectEqual(@as(i32, 3), chunk.get(2));
+    try testing.expectEqual(@as(i32, 10), chunk.get(3));
+    try testing.expectEqual(@as(i32, 11), chunk.get(4));
+    try testing.expectEqual(@as(i32, 12), chunk.get(5));
+}
+
+test "insertMany: in middle" {
+    var chunk = Chunk(i32, 8).empty();
+    try chunk.pushBack(1);
+    try chunk.pushBack(2);
+    try chunk.pushBack(5);
+    try chunk.pushBack(6);
+    var values = [_]i32{ 3, 4 };
+    try chunk.insertMany(2, &values);
+    try testing.expectEqual(@as(usize, 6), chunk.len());
+    for (0..6) |i| {
+        try testing.expectEqual(@as(i32, @intCast(i + 1)), chunk.get(i));
+    }
+}
+
+// Force the shift-left branch:
+//   Condition: self.right == n  OR  (insert_size <= self.left AND left_size < right_size)
+// Push from the front so that self.left > 0, leaving room on the left,
+// then insert near the front so left_size < right_size.
+test "insertMany: shift-left branch" {
+    var chunk = Chunk(i32, 8).empty();
+    // Push from the front to create left headroom (left > 0)
+    try chunk.pushFront(4);
+    try chunk.pushFront(3);
+    try chunk.pushFront(2);
+    try chunk.pushFront(1);
+    // State: left=4, right=8, values=[1,2,3,4]
+    // Insert 1 value at index 0: left_size=0 < right_size=4, insert_size=1 <= left=4
+    var values = [_]i32{0};
+    try chunk.insertMany(0, &values);
+    try testing.expectEqual(@as(usize, 5), chunk.len());
+    for (0..5) |i| {
+        try testing.expectEqual(@as(i32, @intCast(i)), chunk.get(i));
+    }
+}
+
+// Force the shift-right branch:
+//   Condition: self.left == 0  OR  self.right + insert_size <= n
+// Fill from the back (left=0), so shifting right is the only option.
+test "insertMany: shift-right branch" {
+    var chunk = Chunk(i32, 8).empty();
+    // Push from the back so left=0
+    try chunk.pushBack(1);
+    try chunk.pushBack(2);
+    try chunk.pushBack(5);
+    try chunk.pushBack(6);
+    // left=0, right=4; right + insert_size = 4+2 = 6 <= 8
+    var values = [_]i32{ 3, 4 };
+    try chunk.insertMany(2, &values);
+    try testing.expectEqual(@as(usize, 6), chunk.len());
+    for (0..6) |i| {
+        try testing.expectEqual(@as(i32, @intCast(i + 1)), chunk.get(i));
+    }
+}
+
+// Force the full-reorganize branch:
+//   Condition: left > 0 AND right + insert_size > n
+// Arrange so there is left headroom but not enough room on the right,
+// and the insert favors right (left_size >= right_size) to skip the shift-left branch.
+test "insertMany: full-reorganize branch" {
+    var chunk = Chunk(i32, 6).empty();
+    // Build: pushBack 3 then pushFront 2, giving left=2, right=6 (full on right)
+    // values: [1, 2, 3, 4, 5]
+    try chunk.pushBack(3);
+    try chunk.pushBack(4);
+    try chunk.pushBack(5);
+    try chunk.pushFront(2);
+    try chunk.pushFront(1);
+    // left=1, right=6 (using 0-based internal layout with capacity 6)
+    // Insert at index 3 (left_size=3 >= right_size=2): skip shift-left.
+    // right + insert_size = 6 + 1 = 7 > 6: skip shift-right. --> reorganize.
+    var values = [_]i32{99};
+    try chunk.insertMany(3, &values);
+    try testing.expectEqual(@as(usize, 6), chunk.len());
+    try testing.expectEqual(@as(i32, 1), chunk.get(0));
+    try testing.expectEqual(@as(i32, 2), chunk.get(1));
+    try testing.expectEqual(@as(i32, 3), chunk.get(2));
+    try testing.expectEqual(@as(i32, 99), chunk.get(3));
+    try testing.expectEqual(@as(i32, 4), chunk.get(4));
+    try testing.expectEqual(@as(i32, 5), chunk.get(5));
+}
+
+test "insertMany: exact capacity fill" {
+    var chunk = Chunk(i32, 5).empty();
+    try chunk.pushBack(1);
+    try chunk.pushBack(5);
+    var values = [_]i32{ 2, 3, 4 };
+    try chunk.insertMany(1, &values);
+    try testing.expectEqual(@as(usize, 5), chunk.len());
+    for (0..5) |i| {
+        try testing.expectEqual(@as(i32, @intCast(i + 1)), chunk.get(i));
+    }
+}
+
+test "insertMany: single value behaves like insert" {
+    var chunk = Chunk(i32, 8).empty();
+    for (0..4) |i| try chunk.pushBack(@intCast(i));
+    var values = [_]i32{99};
+    try chunk.insertMany(2, &values);
+    try testing.expectEqual(@as(usize, 5), chunk.len());
+    try testing.expectEqual(@as(i32, 0), chunk.get(0));
+    try testing.expectEqual(@as(i32, 1), chunk.get(1));
+    try testing.expectEqual(@as(i32, 99), chunk.get(2));
+    try testing.expectEqual(@as(i32, 2), chunk.get(3));
+    try testing.expectEqual(@as(i32, 3), chunk.get(4));
+}
+
+test "insertMany: empty slice is a no-op" {
+    var chunk = Chunk(i32, 8).empty();
+    try chunk.pushBack(1);
+    try chunk.pushBack(2);
+    try chunk.pushBack(3);
+    var values = [_]i32{};
+    try chunk.insertMany(1, &values);
+    try testing.expectEqual(@as(usize, 3), chunk.len());
+    try testing.expectEqual(@as(i32, 1), chunk.get(0));
+    try testing.expectEqual(@as(i32, 2), chunk.get(1));
+    try testing.expectEqual(@as(i32, 3), chunk.get(2));
 }
