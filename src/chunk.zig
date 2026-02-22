@@ -159,10 +159,10 @@ pub fn Chunk(comptime A: type, comptime n: usize) type {
             return right_chunk;
         }
 
-        pub fn append(self: *Self, other: *Self) error{TooMany}!void {
+        pub fn append(self: *Self, other: *Self) error{TooManyItems}!void {
             const self_len = self.len();
             const other_len = other.len();
-            if (n > self_len + other_len) return error.TooMany;
+            if (n > self_len + other_len) return error.TooManyItems;
             if (self.right + other_len > n) {
                 self.forceCopy(self.left, 0, self_len);
                 self.right -= self.left;
@@ -174,10 +174,10 @@ pub fn Chunk(comptime A: type, comptime n: usize) type {
             other.right = 0;
         }
 
-        pub fn drainFromFront(self: *Self, other: *Self, count: usize) error{ TooMany, NotEnoughItems }!void {
+        pub fn drainFromFront(self: *Self, other: *Self, count: usize) error{ TooManyItems, NotEnoughItems }!void {
             const self_len = self.len();
             const other_len = other.len();
-            if (n > self_len + other_len) return error.TooMany;
+            if (n > self_len + other_len) return error.TooManyItems;
             if (count > other_len) return error.NotEnoughItems;
             if (self.right + count > n) {
                 self.forceCopy(self.left, 0, self_len);
@@ -189,10 +189,10 @@ pub fn Chunk(comptime A: type, comptime n: usize) type {
             other.left += count;
         }
 
-        pub fn drainFromBack(self: *Self, other: *Self, count: usize) error{ TooMany, NotEnoughItems }!void {
+        pub fn drainFromBack(self: *Self, other: *Self, count: usize) error{ TooManyItems, NotEnoughItems }!void {
             const self_len = self.len();
             const other_len = other.len();
-            if (n > self_len + other_len) return error.TooMany;
+            if (n > self_len + other_len) return error.TooManyItems;
             if (count > other_len) return error.NotEnoughItems;
             if (self.left < count) {
                 self.forceCopy(self.left, n - self_len, self_len);
@@ -238,9 +238,9 @@ pub fn Chunk(comptime A: type, comptime n: usize) type {
         /// to the right.
         ///
         /// Panics if the index is out of bounds.
-        pub fn insertMany(self: *Self, index: usize, values: []A) error{TooMany}!void {
+        pub fn insertMany(self: *Self, index: usize, values: []A) error{TooManyItems}!void {
             const insert_size = values.len;
-            if (self.len() + insert_size > n) return error.TooMany;
+            if (self.len() + insert_size > n) return error.TooManyItems;
             if (index > self.len()) @panic("Chunk.insert: index out of bounds");
 
             const real_index = index + self.left;
@@ -457,7 +457,7 @@ test "insertMany: overflow returns error" {
     try chunk.pushBack(2);
     var values = [_]i32{ 10, 11, 12 };
     // 2 slots left, trying to insert 3
-    try testing.expectError(error.TooMany, chunk.insertMany(1, &values));
+    try testing.expectError(error.TooManyItems, chunk.insertMany(1, &values));
 }
 
 test "insertMany: into empty chunk" {
