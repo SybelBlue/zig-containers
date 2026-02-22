@@ -85,8 +85,8 @@ pub fn Chunk(comptime A: type, comptime n: usize) type {
         inline fn forceCopyTo(self: *Self, other: *Self, from: usize, to: usize, count: usize) void {
             if (count > 0)
                 @memcpy(
-                    self.data[to..][0..count],
-                    other.data[from..][0..count],
+                    other.data[to..][0..count],
+                    self.data[from..][0..count],
                 );
         }
 
@@ -120,7 +120,7 @@ pub fn Chunk(comptime A: type, comptime n: usize) type {
 
         pub fn popBack(self: *Self) ?A {
             if (self.isEmpty()) return null;
-            defer self.right -= 1;
+            self.right -= 1;
             return self.forceRead(self.right);
         }
 
@@ -131,11 +131,11 @@ pub fn Chunk(comptime A: type, comptime n: usize) type {
         }
 
         pub fn removeLeft(self: *Self, index: usize) void {
-            self.left = @max(self.left + index, n);
+            self.left = @min(self.left + index, n);
         }
 
         pub fn removeRight(self: *Self, index: usize) void {
-            self.right = @max(self.left + index, n);
+            self.right = @min(self.left + index, n);
         }
 
         pub fn splitOff(self: *Self, index: usize) Self {
@@ -356,31 +356,31 @@ const FakeSizeIterator = struct {
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
-test "issue_11_testcase1d: push_back to full chunk panics" {
-    // const chunk = Chunk(usize, 2).pair(123, 456);
-    // // Expect panic: "Chunk::push_back: can't push to full chunk"
-    // try testing.expectPanic(struct {
-    //     fn call() void {
-    //         try chunk.pushBack(789);
-    //     }
-    // }.call);
-}
+// test "issue_11_testcase1d: push_back to full chunk panics" {
+//     const chunk = Chunk(usize, 2).pair(123, 456);
+//     // Expect panic: "Chunk::push_back: can't push to full chunk"
+//     try testing.expectPanic(struct {
+//         fn call() void {
+//             try chunk.pushBack(789);
+//         }
+//     }.call);
+// }
 
-test "issue_11_testcase3a: clone with panic drops correctly (miri)" {
-    // var chunk = Chunk(DropDetector, 3).init();
-    // try chunk.pushBack(DropDetector.init(42));
-    // try chunk.pushBack(DropDetector.init(42));
-    // try chunk.pushBack(DropDetector.init(43));
-    // _ = chunk.popFront();
+// test "issue_11_testcase3a: clone with panic drops correctly (miri)" {
+//     var chunk = Chunk(DropDetector, 3).init();
+//     try chunk.pushBack(DropDetector.init(42));
+//     try chunk.pushBack(DropDetector.init(42));
+//     try chunk.pushBack(DropDetector.init(43));
+//     _ = chunk.popFront();
 
-    // // Catch the clone panic; miri checks for memory safety / correct drops
-    // const result = std.testing.expectPanic(struct {
-    //     fn call(c: *Chunk(DropDetector, 3)) void {
-    //         _ = c.clone();
-    //     }
-    // }.call);
-    // _ = result;
-}
+//     // Catch the clone panic; miri checks for memory safety / correct drops
+//     const result = std.testing.expectPanic(struct {
+//         fn call(c: *Chunk(DropDetector, 3)) void {
+//             _ = c.clone();
+//         }
+//     }.call);
+//     _ = result;
+// }
 
 // test "issue_11_testcase3b: insert_from with panicking iterator drops correctly" {
 //     const result = std.testing.expectPanic(struct {
@@ -507,33 +507,29 @@ test "split_off" {
     for (0..6) |i| try left.pushBack(@intCast(i));
     var right = left.splitOff(3);
 
-    var left_out = try std.ArrayList(i32).initCapacity(testing.allocator, 6);
-    defer left_out.deinit(testing.allocator);
-    var right_out = try std.ArrayList(i32).initCapacity(testing.allocator, 6);
-    defer right_out.deinit(testing.allocator);
-
-    for (left.items()) |v| try left_out.append(testing.allocator, v);
-    for (right.items()) |v| try right_out.append(testing.allocator, v);
-
-    try testing.expectEqualSlices(i32, &[_]i32{ 0, 1, 2 }, left_out.items);
-    try testing.expectEqualSlices(i32, &[_]i32{ 3, 4, 5 }, right_out.items);
+    try testing.expectEqualSlices(i32, &[_]i32{ 0, 1, 2 }, left.items());
+    try testing.expectEqualSlices(i32, &[_]i32{ 3, 4, 5 }, right.items());
 }
 
 test "append" {
+    var out = try std.ArrayList(i32).initCapacity(testing.allocator, 64);
+    defer out.deinit(testing.allocator);
     var left = Chunk(i32, 64).empty();
-    for (0..32) |i| try left.pushBack(@intCast(i));
+    for (0..32) |i| {
+        try left.pushBack(@intCast(i));
+        try out.append(testing.allocator, @intCast(i));
+    }
 
     var right = Chunk(i32, 64).empty();
     var i: i32 = 63;
-    while (i >= 32) : (i -= 1) try right.pushFront(i);
+    while (i >= 32) : (i -= 1) {
+        try right.pushFront(i);
+        try out.insert(testing.allocator, 32, i);
+    }
 
     try left.append(&right);
 
-    var out = try std.ArrayList(i32).initCapacity(testing.allocator, 64);
-    defer out.deinit(testing.allocator);
-    for (left.items()) |v| try out.append(testing.allocator, v);
-
-    for (0..64) |j| try testing.expectEqual(@as(i32, @intCast(j)), out.items[j]);
+    try testing.expectEqualSlices(i32, out.items, left.items());
 }
 
 test "items" {
