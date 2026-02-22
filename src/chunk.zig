@@ -224,6 +224,7 @@ pub fn Chunk(comptime A: type, comptime n: usize) type {
                 self.right += 1;
             }
         }
+
         /// Insert a new value at index `index`, shifting all the following values
         /// to the right.
         ///
@@ -290,157 +291,6 @@ pub fn Chunk(comptime A: type, comptime n: usize) type {
 
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
-
-// NOTE: These tests assume the existence of a `Chunk` type with the following interface:
-//   Chunk(comptime T: type, comptime CAPACITY: usize)
-//   Methods: pushBack, pushFront, popFront, popBack, insert, insertFrom,
-//            remove, dropLeft, dropRight, splitOff, append, isFull,
-//            len, iter, iterMut, toOwnedSlice, unit, pair, fromInlineArray
-//
-// And an `InlineArray` type with:
-//   InlineArray(comptime T: type, comptime Storage: type)
-//   Methods: push
-//
-// Adjust imports/namespaces to match your actual implementation.
-
-// ─── Drop Detector ────────────────────────────────────────────────────────────
-
-const DropDetector = struct {
-    value: u32,
-
-    fn init(num: u32) DropDetector {
-        return .{ .value = num };
-    }
-
-    fn deinit(self: DropDetector) void {
-        std.debug.assert(self.value == 42 or self.value == 43);
-    }
-
-    fn clone(self: DropDetector) DropDetector {
-        if (self.value == 42) @panic("panic on clone");
-        return DropDetector.init(self.value);
-    }
-};
-
-// ─── Panicking Iterator ───────────────────────────────────────────────────────
-
-const PanickingIterator = struct {
-    current: u32,
-    panic_at: u32,
-    len: usize,
-
-    fn next(self: *PanickingIterator) ?DropDetector {
-        const num = self.current;
-        if (num == self.panic_at) @panic("panicking index");
-        self.current += 1;
-        return DropDetector.init(num);
-    }
-};
-
-// ─── Fake Size Iterator ───────────────────────────────────────────────────────
-
-const FakeSizeIterator = struct {
-    reported: usize,
-    actual: usize,
-
-    fn next(self: *FakeSizeIterator) ?u8 {
-        if (self.actual == 0) return null;
-        self.actual -= 1;
-        return 1;
-    }
-
-    fn len(self: FakeSizeIterator) usize {
-        return self.reported;
-    }
-};
-
-// ─── Tests ────────────────────────────────────────────────────────────────────
-
-// test "issue_11_testcase1d: push_back to full chunk panics" {
-//     const chunk = Chunk(usize, 2).pair(123, 456);
-//     // Expect panic: "Chunk::push_back: can't push to full chunk"
-//     try testing.expectPanic(struct {
-//         fn call() void {
-//             try chunk.pushBack(789);
-//         }
-//     }.call);
-// }
-
-// test "issue_11_testcase3a: clone with panic drops correctly (miri)" {
-//     var chunk = Chunk(DropDetector, 3).init();
-//     try chunk.pushBack(DropDetector.init(42));
-//     try chunk.pushBack(DropDetector.init(42));
-//     try chunk.pushBack(DropDetector.init(43));
-//     _ = chunk.popFront();
-
-//     // Catch the clone panic; miri checks for memory safety / correct drops
-//     const result = std.testing.expectPanic(struct {
-//         fn call(c: *Chunk(DropDetector, 3)) void {
-//             _ = c.clone();
-//         }
-//     }.call);
-//     _ = result;
-// }
-
-// test "issue_11_testcase3b: insert_from with panicking iterator drops correctly" {
-//     const result = std.testing.expectPanic(struct {
-//         fn call() void {
-//             var chunk = Chunk(DropDetector, 5).init();
-//             try chunk.pushBack(DropDetector.init(1));
-//             try chunk.pushBack(DropDetector.init(2));
-//             try chunk.pushBack(DropDetector.init(3));
-//             var it = PanickingIterator{ .current = 1, .panic_at = 1, .len = 1 };
-//             try chunk.insertFrom(1, &it);
-//         }
-//     }.call);
-//     _ = result;
-// }
-
-// test "iterator_too_long: inserting from oversized iterator is handled" {
-//     {
-//         var chunk = Chunk(u8, 5).empty();
-//         try chunk.pushBack(0);
-//         try chunk.pushBack(1);
-//         try chunk.pushBack(2);
-//         var it = [_]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
-//         try chunk.insertMany(1, &it);
-//     }
-//     {
-//         var chunk = Chunk(u8, 5).empty();
-//         try chunk.pushBack(1);
-//         var it = [_]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
-//         try chunk.insertMany(0, &it);
-//     }
-//     {
-//         var chunk = Chunk(u8, 5).empty();
-//         var it = FakeSizeIterator{ .reported = 1, .actual = 10 };
-//         try chunk.insertMany(0, &it);
-//     }
-// }
-
-// test "iterator_too_short1: ExactSizeIterator fewer values panics" {
-//     try testing.expectPanic(struct {
-//         fn call() void {
-//             var chunk = Chunk(u8, 5).init();
-//             try chunk.pushBack(0);
-//             try chunk.pushBack(1);
-//             try chunk.pushBack(2);
-//             var it = FakeSizeIterator{ .reported = 2, .actual = 0 };
-//             try chunk.insertFrom(1, &it);
-//         }
-//     }.call);
-// }
-
-// test "iterator_too_short2: ExactSizeIterator fewer values panics" {
-//     try testing.expectPanic(struct {
-//         fn call() void {
-//             var chunk = Chunk(u8, 5).init();
-//             try chunk.pushBack(1);
-//             var it = FakeSizeIterator{ .reported = 4, .actual = 2 };
-//             try chunk.insertFrom(1, &it);
-//         }
-//     }.call);
-// }
 
 test "is_full" {
     var chunk = Chunk(i32, 64).empty();
@@ -577,7 +427,7 @@ test "insert_front" {
 test "remove_value" {
     var chunk = Chunk(i32, 64).empty();
     for (0..64) |i| try chunk.pushBack(@intCast(i));
-    _ = chunk.remove(32);
+    _ = chunk.remove(32).?;
 
     var out = try std.ArrayList(i32).initCapacity(testing.allocator, 64);
     defer out.deinit(testing.allocator);
@@ -590,33 +440,3 @@ test "remove_value" {
 
     try testing.expectEqualSlices(i32, expected.items, out.items);
 }
-
-// test "dropping: all elements dropped correctly" {
-//     var counter = std.atomic.Value(usize).init(0);
-
-//     const DropTest = struct {
-//         ctr: *std.atomic.Value(usize),
-
-//         fn init(c: *std.atomic.Value(usize)) @This() {
-//             _ = c.fetchAdd(1, .monotonic);
-//             return .{ .ctr = c };
-//         }
-
-//         fn deinit(self: @This()) void {
-//             _ = self.ctr.fetchSub(1, .monotonic);
-//         }
-//     };
-
-//     {
-//         var chunk = Chunk(DropTest, 64).init();
-//         for (0..20) |_| try chunk.pushBack(DropTest.init(&counter));
-//         for (0..20) |_| try chunk.pushFront(DropTest.init(&counter));
-//         try testing.expectEqual(@as(usize, 40), counter.load(.));
-//         for (0..10) |_| chunk.popBack().deinit();
-//         try testing.expectEqual(@as(usize, 30), counter.load(.relaxed));
-//         // chunk goes out of scope here; all remaining elements should be dropped
-//         var it = chunk.intoIter();
-//         while (it.next()) |v| v.deinit();
-//     }
-//     try testing.expectEqual(@as(usize, 0), counter.load(.relaxed));
-// }
